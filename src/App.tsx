@@ -13,7 +13,7 @@ import {
   InputLabel,
   IconButton,
 } from "@mui/material";
-import BluetoothSearchingIcon from '@mui/icons-material/BluetoothSearching';
+import BluetoothSearchingIcon from "@mui/icons-material/BluetoothSearching";
 
 // ----- BLE Service/Characteristic UUIDs ----- //
 const HHI_SERVICE_UUID = 0xBB01;
@@ -22,11 +22,19 @@ const UUIDs = {
   stimAmplitude: 0xBB03,
   stimFrequency: 0xBB04,
   stimPulseWidth: 0xBB05,
+  // 0xBB06 is reserved
   emgThreshold: 0xBB07,
-  batteryLevel: 0xBB08,     // R/Notify
-  wifiStatus: 0xBB0E,       // R/Notify
-  wifiIP: 0xBB0F,           // R/Notify
-  triggerStimulation: 0xBB12,
+  batteryLevel: 0xBB08,      // R/Notify
+  mqttServerPort: 0xBB09,   // R/W (UTF-8 string)
+  masterNameAddr: 0xBB0A,   // R/W (UTF-8 string)
+  minionNameAddr: 0xBB0B,   // R/W (UTF-8 string)
+  wifiSSID: 0xBB0C,         // R/W (UTF-8 string)
+  wifiPassword: 0xBB0D,     // Write Only (UTF-8 string)
+  wifiStatus: 0xBB0E,       // R/Notify (8-bit integer with bitflags)
+  wifiIP: 0xBB0F,           // R/Notify (UTF-8 string)
+  currentStimAmplitude: 0xBB10, // R/Notify
+  currentEmgThreshold: 0xBB11,  // R/Notify
+  triggerStimulation: 0xBB12,   // W
   stimNumPulses: 0xBB13,
 };
 
@@ -35,6 +43,20 @@ function toByteArray(num: number) {
 }
 function fromDataView8(dataView: DataView): number {
   return dataView.getUint8(0);
+}
+/** Helper to read a UTF-8 string from a BLE characteristic value */
+function decodeString(value: DataView) {
+  const decoder = new TextDecoder("utf-8");
+  return decoder.decode(value.buffer);
+}
+/** Helper to write a UTF-8 string */
+async function writeString(
+  characteristic: BluetoothRemoteGATTCharacteristic,
+  str: string
+) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(str);
+  await characteristic.writeValue(data);
 }
 
 function App() {
@@ -50,8 +72,25 @@ function App() {
   const [stimNumPulses, setStimNumPulses] = useState<number>(5);
 
   const [batteryLevel, setBatteryLevel] = useState<number>(0);
+  // This status is an 8-bit integer with bit 0 = Wi-Fi, bit 1 = MQTT, etc.
+  // For a simple example, we'll interpret just bit 0 as wifiConnected.
   const [wifiConnected, setWifiConnected] = useState<boolean>(false);
+  // Potentially track MQTT status bit as well
+  const [mqttConnected, setMqttConnected] = useState<boolean>(false);
+
   const [wifiIP, setWifiIP] = useState<string>("");
+
+  // New states from the spec
+  const [emgThreshold, setEmgThreshold] = useState<number>(0);
+
+  // Wi-Fi config
+  const [wifiSSID, setWifiSSID] = useState<string>("");
+  const [wifiPassword, setWifiPassword] = useState<string>(""); // Write-Only
+  // MQTT
+  const [mqttServerPort, setMqttServerPort] = useState<string>("");
+  // Master/Minion
+  const [masterNameAddr, setMasterNameAddr] = useState<string>("");
+  const [minionNameAddr, setMinionNameAddr] = useState<string>("");
 
   /**
    * Click handler to discover the BLE device and connect.
@@ -128,13 +167,62 @@ function App() {
       // Wi-Fi Status
       const wsChar = await service.getCharacteristic(UUIDs.wifiStatus);
       const wsVal = await wsChar.readValue();
-      setWifiConnected(fromDataView8(wsVal) === 1);
+      const wifiStat = fromDataView8(wsVal);
+      // bit 0 => wifi connected, bit 1 => mqtt connected
+      setWifiConnected((wifiStat & 0x01) !== 0);
+      setMqttConnected((wifiStat & 0x02) !== 0);
 
       // Wi-Fi IP
       const ipChar = await service.getCharacteristic(UUIDs.wifiIP);
       const ipVal = await ipChar.readValue();
-      const decoder = new TextDecoder("utf-8");
-      setWifiIP(decoder.decode(ipVal.buffer));
+      setWifiIP(decodeString(ipVal));
+
+      // EMG Threshold
+      try {
+        const emgChar = await service.getCharacteristic(UUIDs.emgThreshold);
+        const emgVal = await emgChar.readValue();
+        setEmgThreshold(fromDataView8(emgVal));
+      } catch (err) {
+        console.warn("EMG threshold not available:", err);
+      }
+
+      // Wi-Fi SSID
+      try {
+        const ssidChar = await service.getCharacteristic(UUIDs.wifiSSID);
+        const ssidVal = await ssidChar.readValue();
+        setWifiSSID(decodeString(ssidVal));
+      } catch (err) {
+        console.warn("Wi-Fi SSID read not available:", err);
+      }
+
+      // Wi-Fi Password is Write-Only - Do not attempt read
+
+      // MQTT server/port
+      try {
+        const mqttChar = await service.getCharacteristic(UUIDs.mqttServerPort);
+        const mqttVal = await mqttChar.readValue();
+        setMqttServerPort(decodeString(mqttVal));
+      } catch (err) {
+        console.warn("MQTT server/port read not available:", err);
+      }
+
+      // Master name/address
+      try {
+        const masterChar = await service.getCharacteristic(UUIDs.masterNameAddr);
+        const masterVal = await masterChar.readValue();
+        setMasterNameAddr(decodeString(masterVal));
+      } catch (err) {
+        console.warn("Master name read not available:", err);
+      }
+
+      // Minion name/address
+      try {
+        const minionChar = await service.getCharacteristic(UUIDs.minionNameAddr);
+        const minionVal = await minionChar.readValue();
+        setMinionNameAddr(decodeString(minionVal));
+      } catch (err) {
+        console.warn("Minion name read not available:", err);
+      }
     } catch (err) {
       console.error("Error reading initial values:", err);
     }
@@ -162,7 +250,9 @@ function App() {
       await wsChar.startNotifications();
       wsChar.addEventListener("characteristicvaluechanged", (event) => {
         const dv = (event.target as BluetoothRemoteGATTCharacteristic).value!;
-        setWifiConnected(fromDataView8(dv) === 1);
+        const wifiStat = fromDataView8(dv);
+        setWifiConnected((wifiStat & 0x01) !== 0);
+        setMqttConnected((wifiStat & 0x02) !== 0);
       });
     } catch (err) {
       console.warn("Wi-Fi status notifications not available:", err);
@@ -174,8 +264,7 @@ function App() {
       await ipChar.startNotifications();
       ipChar.addEventListener("characteristicvaluechanged", (event) => {
         const dv = (event.target as BluetoothRemoteGATTCharacteristic).value!;
-        const decoder = new TextDecoder("utf-8");
-        setWifiIP(decoder.decode(dv.buffer));
+        setWifiIP(decodeString(dv));
       });
     } catch (err) {
       console.warn("Wi-Fi IP notifications not available:", err);
@@ -183,9 +272,9 @@ function App() {
   };
 
   /**
-   * Write the current UI settings to the device's characteristics
+   * Write the current UI settings to the device's stimulation-related characteristics
    */
-  const onSaveSettings = async () => {
+  const onSaveStimulationSettings = async () => {
     if (!hhiService) return;
     try {
       // 1. Operating Mode
@@ -210,10 +299,75 @@ function App() {
       const numChar = await hhiService.getCharacteristic(UUIDs.stimNumPulses);
       await numChar.writeValue(toByteArray(stimNumPulses));
 
-      alert("Settings updated successfully.");
+      // 6. EMG Threshold (only if you want to write it)
+      try {
+        const emgChar = await hhiService.getCharacteristic(UUIDs.emgThreshold);
+        await emgChar.writeValue(toByteArray(emgThreshold));
+      } catch (err) {
+        console.warn("Unable to write EMG threshold:", err);
+      }
+
+      alert("Stimulation Settings updated successfully.");
     } catch (err) {
-      console.error("Error writing settings:", err);
-      alert("Failed to write settings.");
+      console.error("Error writing stimulation settings:", err);
+      alert("Failed to write stimulation settings.");
+    }
+  };
+
+  /**
+   * Write the Wi-Fi, MQTT, Master/Minion settings
+   */
+  const onSaveWifiMqttSettings = async () => {
+    if (!hhiService) return;
+    try {
+      // Wi-Fi SSID
+      try {
+        const ssidChar = await hhiService.getCharacteristic(UUIDs.wifiSSID);
+        await writeString(ssidChar, wifiSSID);
+      } catch (err) {
+        console.warn("Failed to write Wi-Fi SSID:", err);
+      }
+
+      // Wi-Fi Password (write-only)
+      // If user left it blank, do we skip? Typically you might skip so you don't overwrite.
+      // For simplicity, if there's any value in wifiPassword, we attempt writing it.
+      if (wifiPassword.trim().length > 0) {
+        try {
+          const pwdChar = await hhiService.getCharacteristic(UUIDs.wifiPassword);
+          await writeString(pwdChar, wifiPassword);
+        } catch (err) {
+          console.warn("Failed to write Wi-Fi Password:", err);
+        }
+      }
+
+      // MQTT server/port
+      try {
+        const mqttChar = await hhiService.getCharacteristic(UUIDs.mqttServerPort);
+        await writeString(mqttChar, mqttServerPort);
+      } catch (err) {
+        console.warn("Failed to write MQTT server/port:", err);
+      }
+
+      // Master name/address
+      try {
+        const masterChar = await hhiService.getCharacteristic(UUIDs.masterNameAddr);
+        await writeString(masterChar, masterNameAddr);
+      } catch (err) {
+        console.warn("Failed to write Master name/address:", err);
+      }
+
+      // Minion name/address
+      try {
+        const minionChar = await hhiService.getCharacteristic(UUIDs.minionNameAddr);
+        await writeString(minionChar, minionNameAddr);
+      } catch (err) {
+        console.warn("Failed to write Minion name/address:", err);
+      }
+
+      alert("Wi-Fi/MQTT/Master/Minion settings updated successfully.");
+    } catch (err) {
+      console.error("Error writing Wi-Fi/MQTT settings:", err);
+      alert("Failed to write Wi-Fi/MQTT settings.");
     }
   };
 
@@ -251,18 +405,20 @@ function App() {
 
       <Container maxWidth="md">
         <Box mt={4}>
-
           {device ? (
             <>
               <Typography variant="h5" gutterBottom>
                 Device: {device.name || "Unknown"}
               </Typography>
               <Typography>Battery: {batteryLevel}%</Typography>
-              <Typography>Wi-Fi: {wifiConnected ? "Connected" : "Disconnected"}</Typography>
+              <Typography>
+                Wi-Fi: {wifiConnected ? "Connected" : "Disconnected"}
+                {", "}
+                MQTT: {mqttConnected ? "Connected" : "Disconnected"}
+              </Typography>
               <Typography>IP Address: {wifiIP}</Typography>
 
               <Box mt={2} mb={4}>
-
                 {/* Operating Mode */}
                 <FormControl fullWidth sx={{ mb: 2 }}>
                   <InputLabel id="mode-select-label">Operating Mode</InputLabel>
@@ -319,13 +475,23 @@ function App() {
                   onChange={(e) => setStimNumPulses(Number(e.target.value))}
                 />
 
+                {/* EMG Threshold */}
+                <TextField
+                  fullWidth
+                  margin="normal"
+                  type="number"
+                  label="EMG Threshold (0-5, 255=button)"
+                  value={emgThreshold}
+                  onChange={(e) => setEmgThreshold(Number(e.target.value))}
+                />
+
                 <Button
                   variant="contained"
                   color="primary"
-                  onClick={onSaveSettings}
+                  onClick={onSaveStimulationSettings}
                   sx={{ mt: 2 }}
                 >
-                  Save Settings
+                  Save Stimulation Settings
                 </Button>
 
                 {/* Show "Trigger" button only if in Mode 3 */}
@@ -343,6 +509,65 @@ function App() {
                   </Box>
                 )}
               </Box>
+
+              {/* If in Mode 1 or 2, show Wi-Fi config (or always show if you prefer) */}
+              {(operatingMode === 1 || operatingMode === 2) && (
+                <Box mt={2} mb={4}>
+                  <Typography variant="h6">Wi-Fi and MQTT Settings</Typography>
+
+                  <TextField
+                    fullWidth
+                    margin="normal"
+                    label="Wi-Fi SSID"
+                    value={wifiSSID}
+                    onChange={(e) => setWifiSSID(e.target.value)}
+                  />
+
+                  <TextField
+                    fullWidth
+                    margin="normal"
+                    label="Wi-Fi Password (write-only)"
+                    type="password"
+                    value={wifiPassword}
+                    onChange={(e) => setWifiPassword(e.target.value)}
+                    helperText="Leave blank if you do not wish to overwrite the current password."
+                  />
+
+                  <TextField
+                    fullWidth
+                    margin="normal"
+                    label="MQTT Server/Port"
+                    value={mqttServerPort}
+                    onChange={(e) => setMqttServerPort(e.target.value)}
+                    helperText='Example: "mqtt://8.tcp.eu.ngrok.io:22636"'
+                  />
+
+                  <TextField
+                    fullWidth
+                    margin="normal"
+                    label="Master Name/Address"
+                    value={masterNameAddr}
+                    onChange={(e) => setMasterNameAddr(e.target.value)}
+                  />
+
+                  <TextField
+                    fullWidth
+                    margin="normal"
+                    label="Minion Name/Address"
+                    value={minionNameAddr}
+                    onChange={(e) => setMinionNameAddr(e.target.value)}
+                  />
+
+                  <Button
+                    variant="contained"
+                    color="primary"
+                    onClick={onSaveWifiMqttSettings}
+                    sx={{ mt: 2 }}
+                  >
+                    Save Wi-Fi / MQTT / Master/Minion
+                  </Button>
+                </Box>
+              )}
             </>
           ) : (
             // If not connected, show a button to connect
@@ -359,7 +584,6 @@ function App() {
               </Button>
             </Box>
           )}
-
         </Box>
       </Container>
     </>
