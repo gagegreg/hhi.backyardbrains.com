@@ -60,7 +60,9 @@ function App() {
     try {
       // Request a device with the HHI Service
       const bleDevice = await navigator.bluetooth.requestDevice({
-        filters: [{ services: [HHI_SERVICE_UUID] }],
+        //filters: [{ services: [HHI_SERVICE_UUID] }],
+        acceptAllDevices: true,
+        optionalServices: [HHI_SERVICE_UUID],
       });
       setDevice(bleDevice);
 
