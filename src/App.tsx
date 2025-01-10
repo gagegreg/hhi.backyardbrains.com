@@ -12,6 +12,8 @@ import {
   FormControl,
   InputLabel,
   IconButton,
+  Snackbar,
+  Alert,
 } from "@mui/material";
 import BluetoothSearchingIcon from "@mui/icons-material/BluetoothSearching";
 
@@ -24,17 +26,17 @@ const UUIDs = {
   stimPulseWidth: 0xBB05,
   // 0xBB06 is reserved
   emgThreshold: 0xBB07,
-  batteryLevel: 0xBB08,      // R/Notify
-  mqttServerPort: 0xBB09,   // R/W (UTF-8 string)
-  masterNameAddr: 0xBB0A,   // R/W (UTF-8 string)
-  minionNameAddr: 0xBB0B,   // R/W (UTF-8 string)
-  wifiSSID: 0xBB0C,         // R/W (UTF-8 string)
-  wifiPassword: 0xBB0D,     // Write Only (UTF-8 string)
-  wifiStatus: 0xBB0E,       // R/Notify (8-bit integer with bitflags)
-  wifiIP: 0xBB0F,           // R/Notify (UTF-8 string)
+  batteryLevel: 0xBB08, // R/Notify
+  mqttServerPort: 0xBB09, // R/W (UTF-8 string)
+  masterNameAddr: 0xBB0A, // R/W (UTF-8 string)
+  minionNameAddr: 0xBB0B, // R/W (UTF-8 string)
+  wifiSSID: 0xBB0C, // R/W (UTF-8 string)
+  wifiPassword: 0xBB0D, // Write Only (UTF-8 string)
+  wifiStatus: 0xBB0E, // R/Notify (8-bit integer with bitflags)
+  wifiIP: 0xBB0F, // R/Notify (UTF-8 string)
   currentStimAmplitude: 0xBB10, // R/Notify
-  currentEmgThreshold: 0xBB11,  // R/Notify
-  triggerStimulation: 0xBB12,   // W
+  currentEmgThreshold: 0xBB11, // R/Notify
+  triggerStimulation: 0xBB12, // W
   stimNumPulses: 0xBB13,
 };
 
@@ -62,7 +64,9 @@ async function writeString(
 function App() {
   // -- Bluetooth states
   const [device, setDevice] = useState<BluetoothDevice | null>(null);
-  const [hhiService, setHhiService] = useState<BluetoothRemoteGATTService | null>(null);
+  const [hhiService, setHhiService] = useState<BluetoothRemoteGATTService | null>(
+    null
+  );
 
   // -- Some example UI states
   const [operatingMode, setOperatingMode] = useState<number>(0);
@@ -72,12 +76,8 @@ function App() {
   const [stimNumPulses, setStimNumPulses] = useState<number>(5);
 
   const [batteryLevel, setBatteryLevel] = useState<number>(0);
-  // This status is an 8-bit integer with bit 0 = Wi-Fi, bit 1 = MQTT, etc.
-  // For a simple example, we'll interpret just bit 0 as wifiConnected.
   const [wifiConnected, setWifiConnected] = useState<boolean>(false);
-  // Potentially track MQTT status bit as well
   const [mqttConnected, setMqttConnected] = useState<boolean>(false);
-
   const [wifiIP, setWifiIP] = useState<string>("");
 
   // New states from the spec
@@ -91,6 +91,22 @@ function App() {
   // Master/Minion
   const [masterNameAddr, setMasterNameAddr] = useState<string>("");
   const [minionNameAddr, setMinionNameAddr] = useState<string>("");
+
+  // -- Snackbar states for transient messages
+  const [snackbarOpen, setSnackbarOpen] = useState(false);
+  const [snackbarMessage, setSnackbarMessage] = useState("");
+
+  /** 
+   * Helper to show a short-lived message
+   */
+  const showMessage = (msg: string) => {
+    setSnackbarMessage(msg);
+    setSnackbarOpen(true);
+    // Auto-close after 1 second
+    setTimeout(() => {
+      setSnackbarOpen(false);
+    }, 1000);
+  };
 
   /**
    * Click handler to discover the BLE device and connect.
@@ -118,10 +134,10 @@ function App() {
       // Start notifications for battery, Wi-Fi status, IP
       await startNotifications(service);
 
-      alert("Connected and ready!");
+      showMessage("Connected and ready!");
     } catch (err) {
       console.error("Connection error:", err);
-      alert("Failed to connect to device. See console for details.");
+      showMessage("Failed to connect. See console for details.");
     }
   };
 
@@ -281,36 +297,39 @@ function App() {
       const modeChar = await hhiService.getCharacteristic(UUIDs.operatingMode);
       await modeChar.writeValue(toByteArray(operatingMode));
 
-      // 2. Stimulation Amplitude
-      const ampChar = await hhiService.getCharacteristic(UUIDs.stimAmplitude);
-      await ampChar.writeValue(toByteArray(stimAmplitude));
+      // Only write stimulation parameters if in Mode 3
+      if (operatingMode === 3) {
+        // 2. Stimulation Amplitude
+        const ampChar = await hhiService.getCharacteristic(UUIDs.stimAmplitude);
+        await ampChar.writeValue(toByteArray(stimAmplitude));
 
-      // 3. Frequency
-      const freqChar = await hhiService.getCharacteristic(UUIDs.stimFrequency);
-      await freqChar.writeValue(toByteArray(stimFrequency));
+        // 3. Frequency
+        const freqChar = await hhiService.getCharacteristic(UUIDs.stimFrequency);
+        await freqChar.writeValue(toByteArray(stimFrequency));
 
-      // 4. Pulse Width (16-bit)
-      const pwChar = await hhiService.getCharacteristic(UUIDs.stimPulseWidth);
-      const pwData = new Uint8Array(2);
-      new DataView(pwData.buffer).setUint16(0, stimPulseWidth, true);
-      await pwChar.writeValue(pwData);
+        // 4. Pulse Width (16-bit)
+        const pwChar = await hhiService.getCharacteristic(UUIDs.stimPulseWidth);
+        const pwData = new Uint8Array(2);
+        new DataView(pwData.buffer).setUint16(0, stimPulseWidth, true);
+        await pwChar.writeValue(pwData);
 
-      // 5. Num of Pulses
-      const numChar = await hhiService.getCharacteristic(UUIDs.stimNumPulses);
-      await numChar.writeValue(toByteArray(stimNumPulses));
+        // 5. Num of Pulses
+        const numChar = await hhiService.getCharacteristic(UUIDs.stimNumPulses);
+        await numChar.writeValue(toByteArray(stimNumPulses));
 
-      // 6. EMG Threshold (only if you want to write it)
-      try {
-        const emgChar = await hhiService.getCharacteristic(UUIDs.emgThreshold);
-        await emgChar.writeValue(toByteArray(emgThreshold));
-      } catch (err) {
-        console.warn("Unable to write EMG threshold:", err);
+        // 6. EMG Threshold (if you'd like to allow changes in Mode 3)
+        try {
+          const emgChar = await hhiService.getCharacteristic(UUIDs.emgThreshold);
+          await emgChar.writeValue(toByteArray(emgThreshold));
+        } catch (err) {
+          console.warn("Unable to write EMG threshold:", err);
+        }
       }
 
-      alert("Stimulation Settings updated successfully.");
+      showMessage("Stimulation Settings updated successfully.");
     } catch (err) {
       console.error("Error writing stimulation settings:", err);
-      alert("Failed to write stimulation settings.");
+      showMessage("Failed to write stimulation settings.");
     }
   };
 
@@ -329,8 +348,6 @@ function App() {
       }
 
       // Wi-Fi Password (write-only)
-      // If user left it blank, do we skip? Typically you might skip so you don't overwrite.
-      // For simplicity, if there's any value in wifiPassword, we attempt writing it.
       if (wifiPassword.trim().length > 0) {
         try {
           const pwdChar = await hhiService.getCharacteristic(UUIDs.wifiPassword);
@@ -364,10 +381,10 @@ function App() {
         console.warn("Failed to write Minion name/address:", err);
       }
 
-      alert("Wi-Fi/MQTT/Master/Minion settings updated successfully.");
+      showMessage("Wi-Fi/MQTT settings updated successfully.");
     } catch (err) {
       console.error("Error writing Wi-Fi/MQTT settings:", err);
-      alert("Failed to write Wi-Fi/MQTT settings.");
+      showMessage("Failed to write Wi-Fi/MQTT settings.");
     }
   };
 
@@ -377,13 +394,15 @@ function App() {
   const onTriggerStimulation = async () => {
     if (!hhiService) return;
     try {
-      const triggerChar = await hhiService.getCharacteristic(UUIDs.triggerStimulation);
+      const triggerChar = await hhiService.getCharacteristic(
+        UUIDs.triggerStimulation
+      );
       // Only need to write "1" (8-bit) to trigger
       await triggerChar.writeValue(toByteArray(1));
-      alert("Stimulation triggered!");
+      showMessage("Stimulation triggered!");
     } catch (err) {
       console.error("Error triggering stimulation:", err);
-      alert("Failed to trigger stimulation.");
+      showMessage("Failed to trigger stimulation.");
     }
   };
 
@@ -412,8 +431,7 @@ function App() {
               </Typography>
               <Typography>Battery: {batteryLevel}%</Typography>
               <Typography>
-                Wi-Fi: {wifiConnected ? "Connected" : "Disconnected"}
-                {", "}
+                Wi-Fi: {wifiConnected ? "Connected" : "Disconnected"},{" "}
                 MQTT: {mqttConnected ? "Connected" : "Disconnected"}
               </Typography>
               <Typography>IP Address: {wifiIP}</Typography>
@@ -428,92 +446,93 @@ function App() {
                     value={operatingMode}
                     onChange={(e) => setOperatingMode(Number(e.target.value))}
                   >
-                    <MenuItem value={0}>Mode 0 - Default</MenuItem>
+                    <MenuItem value={0}>Mode 0 - Traditional HHI</MenuItem>
                     <MenuItem value={1}>Mode 1 - Remote Controller</MenuItem>
                     <MenuItem value={2}>Mode 2 - Remote Minion</MenuItem>
                     <MenuItem value={3}>Mode 3 - Custom</MenuItem>
                   </Select>
                 </FormControl>
 
-                {/* Stimulation Amplitude */}
-                <TextField
-                  fullWidth
-                  margin="normal"
-                  type="number"
-                  label="Stimulation Amplitude (0-30, 255=pot)"
-                  value={stimAmplitude}
-                  onChange={(e) => setStimAmplitude(Number(e.target.value))}
-                />
-
-                {/* Stimulation Frequency */}
-                <TextField
-                  fullWidth
-                  margin="normal"
-                  type="number"
-                  label="Stimulation Frequency (1-100 Hz)"
-                  value={stimFrequency}
-                  onChange={(e) => setStimFrequency(Number(e.target.value))}
-                />
-
-                {/* Stimulation Pulse Width */}
-                <TextField
-                  fullWidth
-                  margin="normal"
-                  type="number"
-                  label="Stimulation Pulse Width (50-1000 µs)"
-                  value={stimPulseWidth}
-                  onChange={(e) => setStimPulseWidth(Number(e.target.value))}
-                />
-
-                {/* Number of Pulses */}
-                <TextField
-                  fullWidth
-                  margin="normal"
-                  type="number"
-                  label="Number of Pulses (Mode 3)"
-                  value={stimNumPulses}
-                  onChange={(e) => setStimNumPulses(Number(e.target.value))}
-                />
-
-                {/* EMG Threshold */}
-                <TextField
-                  fullWidth
-                  margin="normal"
-                  type="number"
-                  label="EMG Threshold (0-5, 255=button)"
-                  value={emgThreshold}
-                  onChange={(e) => setEmgThreshold(Number(e.target.value))}
-                />
-
-                <Button
-                  variant="contained"
-                  color="primary"
-                  onClick={onSaveStimulationSettings}
-                  sx={{ mt: 2 }}
-                >
-                  Save Stimulation Settings
-                </Button>
-
-                {/* Show "Trigger" button only if in Mode 3 */}
+                {/* Show these stimulation settings only if in Mode 3 */}
                 {operatingMode === 3 && (
-                  <Box mt={4}>
-                    <Typography variant="h6">Trigger Custom Stimulation</Typography>
+                  <>
+                    <TextField
+                      fullWidth
+                      margin="normal"
+                      type="number"
+                      label="Stimulation Amplitude (0-50 mA, 255=pot)"
+                      value={stimAmplitude}
+                      onChange={(e) => setStimAmplitude(Number(e.target.value))}
+                    />
+
+                    <TextField
+                      fullWidth
+                      margin="normal"
+                      type="number"
+                      label="Stimulation Frequency (1-100 Hz)"
+                      value={stimFrequency}
+                      onChange={(e) => setStimFrequency(Number(e.target.value))}
+                    />
+
+                    <TextField
+                      fullWidth
+                      margin="normal"
+                      type="number"
+                      label="Stimulation Pulse Width (50-1000 µs)"
+                      value={stimPulseWidth}
+                      onChange={(e) => setStimPulseWidth(Number(e.target.value))}
+                    />
+
+                    <TextField
+                      fullWidth
+                      margin="normal"
+                      type="number"
+                      label="Number of Pulses (Mode 3)"
+                      value={stimNumPulses}
+                      onChange={(e) => setStimNumPulses(Number(e.target.value))}
+                    />
+
+                    <TextField
+                      fullWidth
+                      margin="normal"
+                      type="number"
+                      label="EMG Threshold (0-5, 255=button)"
+                      value={emgThreshold}
+                      onChange={(e) => setEmgThreshold(Number(e.target.value))}
+                    />
+
                     <Button
                       variant="contained"
-                      color="secondary"
-                      onClick={onTriggerStimulation}
+                      color="primary"
+                      onClick={onSaveStimulationSettings}
                       sx={{ mt: 2 }}
                     >
-                      Trigger Stimulation
+                      Save Stimulation Settings
                     </Button>
-                  </Box>
+
+                    <Box mt={4}>
+                      <Typography variant="h6">
+                        Trigger Custom Stimulation
+                      </Typography>
+                      <Button
+                        variant="contained"
+                        color="secondary"
+                        onClick={onTriggerStimulation}
+                        sx={{ mt: 2 }}
+                      >
+                        Trigger Stimulation
+                      </Button>
+                    </Box>
+                  </>
                 )}
               </Box>
 
-              {/* If in Mode 1 or 2, show Wi-Fi config (or always show if you prefer) */}
+              {/* If in Mode 1 or 2, show Wi-Fi config */}
               {(operatingMode === 1 || operatingMode === 2) && (
                 <Box mt={2} mb={4}>
-                  <Typography variant="h6">Wi-Fi and MQTT Settings</Typography>
+                  <Typography variant="h6">
+                    Wi-Fi and MQTT Settings
+                  </Typography>
 
                   <TextField
                     fullWidth
@@ -586,6 +605,16 @@ function App() {
           )}
         </Box>
       </Container>
+
+      {/* Snackbar for transient messages */}
+      <Snackbar
+        open={snackbarOpen}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert severity="info" sx={{ width: "100%" }}>
+          {snackbarMessage}
+        </Alert>
+      </Snackbar>
     </>
   );
 }
