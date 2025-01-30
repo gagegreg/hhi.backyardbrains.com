@@ -17,24 +17,21 @@ import {
 } from "@mui/material";
 import BluetoothSearchingIcon from "@mui/icons-material/BluetoothSearching";
 
-// ----- BLE Service/Characteristic UUIDs ----- //
+// ----- Standard Battery Service/Characteristic UUIDs ----- //
+const BATTERY_SERVICE_UUID = 0x180f;
+const BATTERY_LEVEL_CHAR_UUID = 0x2a19;
+
+// ----- Our custom HHI Service/Characteristics (0xBB01, etc.) ----- //
 const HHI_SERVICE_UUID = 0xBB01;
-
-// If your device truly uses a custom battery characteristic at 0xBB08:
-const CUSTOM_BATTERY_CHAR_UUID = 0xBB08;
-
-// If your device implements standard Battery Service (0x180F) → Battery Level (0x2A19):
-const BATTERY_SERVICE_UUID = 0x180F;
-const BATTERY_LEVEL_CHAR_UUID = 0x2A19;
 
 const UUIDs = {
   operatingMode: 0xBB02,
   stimAmplitude: 0xBB03,
   stimFrequency: 0xBB04,
   stimPulseWidth: 0xBB05,
-  // 0xBB06 is reserved (or a 16-bit amplitude?), check your doc/firmware
+  // 0xBB06 is reserved in your doc
   emgThreshold: 0xBB07,
-  batteryLevel: 0xBB08, // R/Notify in the original code (but your doc says "Reserved"?)
+  // 0xBB08 used to be custom battery, but we're not using that now
   mqttServerPort: 0xBB09,
   masterNameAddr: 0xBB0A,
   minionNameAddr: 0xBB0B,
@@ -48,16 +45,20 @@ const UUIDs = {
   stimNumPulses: 0xBB13,
 };
 
+// Helper to convert a number to a one-byte Uint8Array
 function toByteArray(num: number) {
   return new Uint8Array([num & 0xff]);
 }
+// Helper to interpret a DataView as a single Uint8
 function fromDataView8(dataView: DataView): number {
   return dataView.getUint8(0);
 }
+// Decode a DataView as a UTF-8 string
 function decodeString(value: DataView) {
   const decoder = new TextDecoder("utf-8");
   return decoder.decode(value.buffer);
 }
+// Encode a string as UTF-8, and write to characteristic
 async function writeString(
   characteristic: BluetoothRemoteGATTCharacteristic,
   str: string
@@ -68,17 +69,13 @@ async function writeString(
 }
 
 function App() {
-  // -- Bluetooth states
+  // ----- BLE service references -----
   const [device, setDevice] = useState<BluetoothDevice | null>(null);
   const [hhiService, setHhiService] = useState<BluetoothRemoteGATTService | null>(
     null
   );
 
-  // -- Possibly store the standard battery characteristic separately
-  const [batteryChar, setBatteryChar] =
-    useState<BluetoothRemoteGATTCharacteristic | null>(null);
-
-  // -- Some example UI states
+  // ----- UI states for config -----
   const [operatingMode, setOperatingMode] = useState<number>(0);
   const [stimAmplitude, setStimAmplitude] = useState<number>(10);
   const [stimFrequency, setStimFrequency] = useState<number>(20);
@@ -86,20 +83,20 @@ function App() {
   const [stimNumPulses, setStimNumPulses] = useState<number>(5);
   const [emgThreshold, setEmgThreshold] = useState<number>(0);
 
-  // Status
+  // ----- Battery, Wi-Fi, MQTT, etc. -----
   const [batteryLevel, setBatteryLevel] = useState<number>(0);
   const [wifiConnected, setWifiConnected] = useState<boolean>(false);
   const [mqttConnected, setMqttConnected] = useState<boolean>(false);
   const [wifiIP, setWifiIP] = useState<string>("");
 
-  // Wi-Fi/MQTT
+  // Wi-Fi & MQTT
   const [wifiSSID, setWifiSSID] = useState<string>("");
   const [wifiPassword, setWifiPassword] = useState<string>("");
   const [mqttServerPort, setMqttServerPort] = useState<string>("");
   const [masterNameAddr, setMasterNameAddr] = useState<string>("");
   const [minionNameAddr, setMinionNameAddr] = useState<string>("");
 
-  // -- Snackbar states for transient messages
+  // ----- Snackbar for short-lived messages -----
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
 
@@ -113,35 +110,29 @@ function App() {
   };
 
   /**
-   * Click handler to discover the BLE device and connect.
+   * Click handler to discover the BLE device, connect, and set up battery + HHI
    */
   const onConnectClick = async () => {
     try {
-      // Request a device with the HHI Service, and optionally battery service if your firmware uses standard 0x180F:
+      // Request device with standard battery service + HHI service
       const bleDevice = await navigator.bluetooth.requestDevice({
-        // filters: [{ services: [HHI_SERVICE_UUID] }], 
-        // If you trust your device will have the same name, you can do filters:
         acceptAllDevices: true,
-        optionalServices: [HHI_SERVICE_UUID, BATTERY_SERVICE_UUID],
+        optionalServices: [BATTERY_SERVICE_UUID, HHI_SERVICE_UUID],
       });
       setDevice(bleDevice);
 
-      // Connect to GATT Server
+      // Connect
       const gattServer = await bleDevice.gatt!.connect();
 
-      // Get HHI Service (0xBB01)
-      const service = await gattServer.getPrimaryService(HHI_SERVICE_UUID);
-      setHhiService(service);
-
-      // Also attempt to get standard Battery Service (0x180F)
+      // 1) Standard Battery
       try {
         const batService = await gattServer.getPrimaryService(BATTERY_SERVICE_UUID);
         const batChar = await batService.getCharacteristic(BATTERY_LEVEL_CHAR_UUID);
-        setBatteryChar(batChar);
 
-        // Read initial battery from standard service
+        // Read initial battery
         const initialBatt = await batChar.readValue();
         setBatteryLevel(fromDataView8(initialBatt));
+
         // Start notifications
         await batChar.startNotifications();
         batChar.addEventListener("characteristicvaluechanged", (event) => {
@@ -149,13 +140,17 @@ function App() {
           setBatteryLevel(fromDataView8(dv));
         });
       } catch (err) {
-        console.warn("Standard battery service not found or no notify support:", err);
+        console.warn("Could not read from Battery Service:", err);
       }
 
-      // Read initial characteristics from the custom HHI service
+      // 2) HHI Service (0xBB01)
+      const service = await gattServer.getPrimaryService(HHI_SERVICE_UUID);
+      setHhiService(service);
+
+      // Read all relevant HHI characteristics
       await readInitialCharacteristics(service);
 
-      // Start HHI notifications (battery, wifi status, wifi IP, etc.)
+      // Start HHI notifications
       await startHhiNotifications(service);
 
       showMessage("Connected and ready!");
@@ -166,7 +161,7 @@ function App() {
   };
 
   /**
-   * Read initial values from relevant characteristics in the HHI service
+   * Reads relevant characteristics from the HHI service
    */
   const readInitialCharacteristics = async (
     service: BluetoothRemoteGATTService
@@ -177,7 +172,7 @@ function App() {
       const modeVal = await modeChar.readValue();
       setOperatingMode(fromDataView8(modeVal));
 
-      // Stim params, only relevant if in mode 3, but let's read them anyway
+      // Stim parameters
       const ampChar = await service.getCharacteristic(UUIDs.stimAmplitude);
       const ampVal = await ampChar.readValue();
       setStimAmplitude(fromDataView8(ampVal));
@@ -195,13 +190,13 @@ function App() {
       const numVal = await numChar.readValue();
       setStimNumPulses(fromDataView8(numVal));
 
-      // Battery from custom 0xBB08 (only if your firmware uses it):
+      // EMG Threshold
       try {
-        const battChar = await service.getCharacteristic(UUIDs.batteryLevel);
-        const battVal = await battChar.readValue();
-        setBatteryLevel(fromDataView8(battVal));
+        const emgChar = await service.getCharacteristic(UUIDs.emgThreshold);
+        const emgVal = await emgChar.readValue();
+        setEmgThreshold(fromDataView8(emgVal));
       } catch (err) {
-        console.warn("Custom battery characteristic 0xBB08 not found:", err);
+        console.warn("EMG threshold read not available:", err);
       }
 
       // Wi-Fi Status
@@ -216,15 +211,6 @@ function App() {
       const ipVal = await ipChar.readValue();
       setWifiIP(decodeString(ipVal));
 
-      // EMG Threshold
-      try {
-        const emgChar = await service.getCharacteristic(UUIDs.emgThreshold);
-        const emgVal = await emgChar.readValue();
-        setEmgThreshold(fromDataView8(emgVal));
-      } catch (err) {
-        console.warn("EMG threshold not available:", err);
-      }
-
       // Wi-Fi SSID
       try {
         const ssidChar = await service.getCharacteristic(UUIDs.wifiSSID);
@@ -234,7 +220,7 @@ function App() {
         console.warn("Wi-Fi SSID read not available:", err);
       }
 
-      // Wi-Fi Password is write-only, skip reading
+      // Wi-Fi Password is write-only; skip reading
 
       // MQTT server/port
       try {
@@ -242,7 +228,7 @@ function App() {
         const mqttVal = await mqttChar.readValue();
         setMqttServerPort(decodeString(mqttVal));
       } catch (err) {
-        console.warn("MQTT server/port read not available:", err);
+        console.warn("MQTT server read not available:", err);
       }
 
       // Master name/address
@@ -268,22 +254,9 @@ function App() {
   };
 
   /**
-   * Start notifications for custom battery (if present), Wi-Fi Status, Wi-Fi IP, etc. 
-   * (This is only for the 0xBB01 HHI service. The standard battery is handled separately above.)
+   * Start notifications for Wi-Fi status, IP, etc. from the HHI service
    */
   const startHhiNotifications = async (service: BluetoothRemoteGATTService) => {
-    // Start custom battery notifications if your device uses 0xBB08 that way
-    try {
-      const battChar = await service.getCharacteristic(UUIDs.batteryLevel);
-      await battChar.startNotifications();
-      battChar.addEventListener("characteristicvaluechanged", (event) => {
-        const dv = (event.target as BluetoothRemoteGATTCharacteristic).value!;
-        setBatteryLevel(fromDataView8(dv));
-      });
-    } catch (err) {
-      console.warn("Custom battery notifications not available:", err);
-    }
-
     // Wi-Fi Status
     try {
       const wsChar = await service.getCharacteristic(UUIDs.wifiStatus);
@@ -312,8 +285,7 @@ function App() {
   };
 
   /**
-   * Save ONLY the operating mode (used in all modes).
-   * This addresses the complaint that mode 0,1,2 were never sent to the device.
+   * Write only the operating mode (used for 0,1,2,3)
    */
   const onSaveOperatingMode = async () => {
     if (!hhiService) return;
@@ -328,20 +300,20 @@ function App() {
   };
 
   /**
-   * Write the current UI settings to the device's stimulation-related characteristics
-   * (Only relevant for Mode 3 in your design.)
+   * Write the stimulation-related characteristics (Mode 3)
    */
   const onSaveStimulationSettings = async () => {
     if (!hhiService) return;
     try {
-      // We can assume the device is in mode 3, but if not, it's okay to still attempt.
+      // Stimulation Amplitude
       const ampChar = await hhiService.getCharacteristic(UUIDs.stimAmplitude);
       await ampChar.writeValue(toByteArray(stimAmplitude));
 
+      // Frequency
       const freqChar = await hhiService.getCharacteristic(UUIDs.stimFrequency);
       await freqChar.writeValue(toByteArray(stimFrequency));
 
-      // Pulse Width (16-bit)
+      // Pulse Width (16-bit LE)
       const pwChar = await hhiService.getCharacteristic(UUIDs.stimPulseWidth);
       const pwData = new Uint8Array(2);
       new DataView(pwData.buffer).setUint16(0, stimPulseWidth, true);
@@ -367,7 +339,7 @@ function App() {
   };
 
   /**
-   * Write the Wi-Fi, MQTT, Master/Minion settings
+   * Write Wi-Fi, MQTT, Master, Minion
    */
   const onSaveWifiMqttSettings = async () => {
     if (!hhiService) return;
@@ -398,20 +370,20 @@ function App() {
         console.warn("Failed to write MQTT server/port:", err);
       }
 
-      // Master name/address
+      // Master name
       try {
         const masterChar = await hhiService.getCharacteristic(UUIDs.masterNameAddr);
         await writeString(masterChar, masterNameAddr);
       } catch (err) {
-        console.warn("Failed to write Master name/address:", err);
+        console.warn("Failed to write Master name:", err);
       }
 
-      // Minion name/address
+      // Minion name
       try {
         const minionChar = await hhiService.getCharacteristic(UUIDs.minionNameAddr);
         await writeString(minionChar, minionNameAddr);
       } catch (err) {
-        console.warn("Failed to write Minion name/address:", err);
+        console.warn("Failed to write Minion name:", err);
       }
 
       showMessage("Wi-Fi/MQTT settings updated successfully.");
@@ -422,7 +394,7 @@ function App() {
   };
 
   /**
-   * Trigger a single stimulation train in Mode 3
+   * Trigger stimulation (write 1 to 0xBB12)
    */
   const onTriggerStimulation = async () => {
     if (!hhiService) return;
@@ -430,7 +402,6 @@ function App() {
       const triggerChar = await hhiService.getCharacteristic(
         UUIDs.triggerStimulation
       );
-      // Write "1" to start stimulation
       await triggerChar.writeValue(toByteArray(1));
       showMessage("Stimulation triggered!");
     } catch (err) {
@@ -440,8 +411,8 @@ function App() {
   };
 
   /**
-   * Stop stimulation manually (write "0" to the same trigger characteristic).
-   * The device should interpret that as "abort/stop now."
+   * Stop stimulation manually (write 0 to 0xBB12).
+   * Useful when stimNumPulses=0 (infinite) or whenever user wants to abort.
    */
   const onStopStimulation = async () => {
     if (!hhiService) return;
@@ -449,9 +420,8 @@ function App() {
       const triggerChar = await hhiService.getCharacteristic(
         UUIDs.triggerStimulation
       );
-      // Write "0" to stop stimulation
       await triggerChar.writeValue(toByteArray(0));
-      showMessage("Stimulation stopped (manual).");
+      showMessage("Stimulation stopped.");
     } catch (err) {
       console.error("Error stopping stimulation:", err);
       showMessage("Failed to stop stimulation.");
@@ -499,20 +469,16 @@ function App() {
                     onChange={(e) => setOperatingMode(Number(e.target.value))}
                   >
                     <MenuItem value={0}>Mode 0 - Traditional HHI</MenuItem>
-                    <MenuItem value={1}>Mode 1 - Master/Remote Controller</MenuItem>
-                    <MenuItem value={2}>Mode 2 - Minion/Remote End</MenuItem>
+                    <MenuItem value={1}>Mode 1 - Master/Controller</MenuItem>
+                    <MenuItem value={2}>Mode 2 - Minion/Remote</MenuItem>
                     <MenuItem value={3}>Mode 3 - Custom</MenuItem>
                   </Select>
                 </FormControl>
-                <Button
-                  variant="contained"
-                  color="primary"
-                  onClick={onSaveOperatingMode}
-                >
+                <Button variant="contained" onClick={onSaveOperatingMode}>
                   Save Operating Mode
                 </Button>
 
-                {/* Show these stimulation settings only if in Mode 3 */}
+                {/* If mode=3, show custom stimulation UI */}
                 {operatingMode === 3 && (
                   <Box mt={4}>
                     <TextField
@@ -546,7 +512,7 @@ function App() {
                       fullWidth
                       margin="normal"
                       type="number"
-                      label="Number of Pulses (Mode 3)"
+                      label="Number of Pulses (0=∞ until stopped)"
                       value={stimNumPulses}
                       onChange={(e) => setStimNumPulses(Number(e.target.value))}
                     />
@@ -562,28 +528,27 @@ function App() {
 
                     <Button
                       variant="contained"
-                      color="primary"
+                      sx={{ mt: 2, mr: 2 }}
                       onClick={onSaveStimulationSettings}
-                      sx={{ mt: 2 }}
                     >
                       Save Stimulation Settings
                     </Button>
 
                     <Box mt={4}>
-                      <Typography variant="h6">Trigger Custom Stimulation</Typography>
+                      <Typography variant="h6">Manual Trigger</Typography>
                       <Button
                         variant="contained"
                         color="secondary"
-                        onClick={onTriggerStimulation}
                         sx={{ mt: 2, mr: 2 }}
+                        onClick={onTriggerStimulation}
                       >
                         Start Stimulation
                       </Button>
                       <Button
                         variant="contained"
                         color="warning"
-                        onClick={onStopStimulation}
                         sx={{ mt: 2 }}
+                        onClick={onStopStimulation}
                       >
                         Stop Stimulation
                       </Button>
@@ -592,7 +557,7 @@ function App() {
                 )}
               </Box>
 
-              {/* If in Mode 1 or 2, show Wi-Fi / MQTT config */}
+              {/* If in mode 1 or 2, show Wi-Fi / MQTT config */}
               {(operatingMode === 1 || operatingMode === 2) && (
                 <Box mt={2} mb={4}>
                   <Typography variant="h6">Wi-Fi and MQTT Settings</Typography>
@@ -642,9 +607,8 @@ function App() {
 
                   <Button
                     variant="contained"
-                    color="primary"
-                    onClick={onSaveWifiMqttSettings}
                     sx={{ mt: 2 }}
+                    onClick={onSaveWifiMqttSettings}
                   >
                     Save Wi-Fi / MQTT / Master/Minion
                   </Button>
@@ -652,7 +616,7 @@ function App() {
               )}
             </>
           ) : (
-            // If not connected, show a button to connect
+            // Not connected => show a connect button
             <Box textAlign="center" mt={4}>
               <Typography variant="h5" gutterBottom>
                 Please Connect to HHI
@@ -669,7 +633,7 @@ function App() {
         </Box>
       </Container>
 
-      {/* Snackbar for transient messages */}
+      {/* Snackbar for short-lived messages */}
       <Snackbar
         open={snackbarOpen}
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
