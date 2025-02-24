@@ -8,7 +8,6 @@ import { createTheme, ThemeProvider, CssBaseline } from '@mui/material'
 const theme = createTheme({
   palette: {
     mode: 'light',
-    // Optionally customize primary, secondary, etc.
     primary: {
       main: '#1976d2',
     },
@@ -16,11 +15,13 @@ const theme = createTheme({
 })
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
+  // If StrictMode’s double-render is confusing your BLE logs, 
+  // you can comment it out for debugging:
+  //
+  // <React.StrictMode>
     <ThemeProvider theme={theme}>
-      {/* Global baseline styles (background = white, etc.) */}
       <CssBaseline />
       <App />
     </ThemeProvider>
-  </React.StrictMode>,
+  // </React.StrictMode>
 )

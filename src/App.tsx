@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   AppBar,
   Toolbar,
@@ -22,27 +22,26 @@ const BATTERY_SERVICE_UUID = 0x180f;
 const BATTERY_LEVEL_CHAR_UUID = 0x2a19;
 
 // ----- Our custom HHI Service/Characteristics (0xBB01, etc.) ----- //
-const HHI_SERVICE_UUID = 0xBB01;
+const HHI_SERVICE_UUID = 0xbb01;
 
 const UUIDs = {
-  operatingMode: 0xBB02,
-  stimAmplitude: 0xBB03,
-  stimFrequency: 0xBB04,
-  stimPulseWidth: 0xBB05,
-  // 0xBB06 is reserved in your doc
-  emgThreshold: 0xBB07,
-  // 0xBB08 used to be custom battery, but we're not using that now
-  mqttServerPort: 0xBB09,
-  masterNameAddr: 0xBB0A,
-  minionNameAddr: 0xBB0B,
-  wifiSSID: 0xBB0C,
-  wifiPassword: 0xBB0D,
-  wifiStatus: 0xBB0E,
-  wifiIP: 0xBB0F,
-  currentStimAmplitude: 0xBB10,
-  currentEmgThreshold: 0xBB11,
-  triggerStimulation: 0xBB12,
-  stimNumPulses: 0xBB13,
+  operatingMode: 0xbb02,
+  stimAmplitude: 0xbb03,
+  stimFrequency: 0xbb04,
+  stimPulseWidth: 0xbb05,
+  // 0xBB06 is 16-bit amplitude in your doc—if needed, add it similarly
+  emgThreshold: 0xbb07,
+  mqttServerPort: 0xbb09,
+  masterNameAddr: 0xbb0a,
+  minionNameAddr: 0xbb0b,
+  wifiSSID: 0xbb0c,
+  wifiPassword: 0xbb0d,
+  wifiStatus: 0xbb0e,
+  wifiIP: 0xbb0f,
+  currentStimAmplitude: 0xbb10,
+  currentEmgThreshold: 0xbb11,
+  triggerStimulation: 0xbb12,
+  stimNumPulses: 0xbb13,
 };
 
 // Helper to convert a number to a one-byte Uint8Array
@@ -61,11 +60,18 @@ function decodeString(value: DataView) {
 // Encode a string as UTF-8, and write to characteristic
 async function writeString(
   characteristic: BluetoothRemoteGATTCharacteristic,
-  str: string
+  str: string,
+  useWithoutResponse = false
 ) {
   const encoder = new TextEncoder();
   const data = encoder.encode(str);
-  await characteristic.writeValue(data);
+
+  // If your firmware expects Write Without Response on wifi password:
+  if (useWithoutResponse) {
+    await characteristic.writeValueWithoutResponse(data);
+  } else {
+    await characteristic.writeValue(data);
+  }
 }
 
 function App() {
@@ -131,13 +137,17 @@ function App() {
 
         // Read initial battery
         const initialBatt = await batChar.readValue();
-        setBatteryLevel(fromDataView8(initialBatt));
+        const initValue = fromDataView8(initialBatt);
+        console.log("Initial battery:", initValue, "%");
+        setBatteryLevel(initValue);
 
         // Start notifications
         await batChar.startNotifications();
         batChar.addEventListener("characteristicvaluechanged", (event) => {
           const dv = (event.target as BluetoothRemoteGATTCharacteristic).value!;
-          setBatteryLevel(fromDataView8(dv));
+          const newVal = fromDataView8(dv);
+          console.log("Battery level changed notification:", newVal);
+          setBatteryLevel(newVal);
         });
       } catch (err) {
         console.warn("Could not read from Battery Service:", err);
@@ -170,31 +180,42 @@ function App() {
       // Operating Mode
       const modeChar = await service.getCharacteristic(UUIDs.operatingMode);
       const modeVal = await modeChar.readValue();
-      setOperatingMode(fromDataView8(modeVal));
+      const om = fromDataView8(modeVal);
+      console.log("Read Operating Mode:", om);
+      setOperatingMode(om);
 
       // Stim parameters
       const ampChar = await service.getCharacteristic(UUIDs.stimAmplitude);
       const ampVal = await ampChar.readValue();
-      setStimAmplitude(fromDataView8(ampVal));
+      const ampNum = fromDataView8(ampVal);
+      console.log("Read stimAmplitude:", ampNum);
+      setStimAmplitude(ampNum);
 
       const freqChar = await service.getCharacteristic(UUIDs.stimFrequency);
       const freqVal = await freqChar.readValue();
-      setStimFrequency(fromDataView8(freqVal));
+      const freqNum = fromDataView8(freqVal);
+      console.log("Read stimFrequency:", freqNum);
+      setStimFrequency(freqNum);
 
       const pwChar = await service.getCharacteristic(UUIDs.stimPulseWidth);
       const pwVal = await pwChar.readValue();
       const pulseWidth = pwVal.getUint16(0, true);
+      console.log("Read stimPulseWidth:", pulseWidth);
       setStimPulseWidth(pulseWidth);
 
       const numChar = await service.getCharacteristic(UUIDs.stimNumPulses);
       const numVal = await numChar.readValue();
-      setStimNumPulses(fromDataView8(numVal));
+      const numPulses = fromDataView8(numVal);
+      console.log("Read stimNumPulses:", numPulses);
+      setStimNumPulses(numPulses);
 
       // EMG Threshold
       try {
         const emgChar = await service.getCharacteristic(UUIDs.emgThreshold);
         const emgVal = await emgChar.readValue();
-        setEmgThreshold(fromDataView8(emgVal));
+        const emgNum = fromDataView8(emgVal);
+        console.log("Read EMG threshold:", emgNum);
+        setEmgThreshold(emgNum);
       } catch (err) {
         console.warn("EMG threshold read not available:", err);
       }
@@ -203,19 +224,24 @@ function App() {
       const wsChar = await service.getCharacteristic(UUIDs.wifiStatus);
       const wsVal = await wsChar.readValue();
       const wifiStat = fromDataView8(wsVal);
+      console.log("Read Wi-Fi status byte:", wifiStat);
       setWifiConnected((wifiStat & 0x01) !== 0);
       setMqttConnected((wifiStat & 0x02) !== 0);
 
       // Wi-Fi IP
       const ipChar = await service.getCharacteristic(UUIDs.wifiIP);
       const ipVal = await ipChar.readValue();
-      setWifiIP(decodeString(ipVal));
+      const ipStr = decodeString(ipVal);
+      console.log("Read Wi-Fi IP:", ipStr);
+      setWifiIP(ipStr);
 
       // Wi-Fi SSID
       try {
         const ssidChar = await service.getCharacteristic(UUIDs.wifiSSID);
         const ssidVal = await ssidChar.readValue();
-        setWifiSSID(decodeString(ssidVal));
+        const ssidStr = decodeString(ssidVal);
+        console.log("Read Wi-Fi SSID:", ssidStr);
+        setWifiSSID(ssidStr);
       } catch (err) {
         console.warn("Wi-Fi SSID read not available:", err);
       }
@@ -226,7 +252,9 @@ function App() {
       try {
         const mqttChar = await service.getCharacteristic(UUIDs.mqttServerPort);
         const mqttVal = await mqttChar.readValue();
-        setMqttServerPort(decodeString(mqttVal));
+        const mqttStr = decodeString(mqttVal);
+        console.log("Read MQTT server:", mqttStr);
+        setMqttServerPort(mqttStr);
       } catch (err) {
         console.warn("MQTT server read not available:", err);
       }
@@ -235,7 +263,9 @@ function App() {
       try {
         const masterChar = await service.getCharacteristic(UUIDs.masterNameAddr);
         const masterVal = await masterChar.readValue();
-        setMasterNameAddr(decodeString(masterVal));
+        const masterStr = decodeString(masterVal);
+        console.log("Read Master Name:", masterStr);
+        setMasterNameAddr(masterStr);
       } catch (err) {
         console.warn("Master name read not available:", err);
       }
@@ -244,7 +274,9 @@ function App() {
       try {
         const minionChar = await service.getCharacteristic(UUIDs.minionNameAddr);
         const minionVal = await minionChar.readValue();
-        setMinionNameAddr(decodeString(minionVal));
+        const minionStr = decodeString(minionVal);
+        console.log("Read Minion Name:", minionStr);
+        setMinionNameAddr(minionStr);
       } catch (err) {
         console.warn("Minion name read not available:", err);
       }
@@ -264,6 +296,7 @@ function App() {
       wsChar.addEventListener("characteristicvaluechanged", (event) => {
         const dv = (event.target as BluetoothRemoteGATTCharacteristic).value!;
         const wifiStat = fromDataView8(dv);
+        console.log("Wi-Fi status changed (notification):", wifiStat);
         setWifiConnected((wifiStat & 0x01) !== 0);
         setMqttConnected((wifiStat & 0x02) !== 0);
       });
@@ -277,7 +310,9 @@ function App() {
       await ipChar.startNotifications();
       ipChar.addEventListener("characteristicvaluechanged", (event) => {
         const dv = (event.target as BluetoothRemoteGATTCharacteristic).value!;
-        setWifiIP(decodeString(dv));
+        const ipStr = decodeString(dv);
+        console.log("Wi-Fi IP changed (notification):", ipStr);
+        setWifiIP(ipStr);
       });
     } catch (err) {
       console.warn("Wi-Fi IP notifications not available:", err);
@@ -291,6 +326,7 @@ function App() {
     if (!hhiService) return;
     try {
       const modeChar = await hhiService.getCharacteristic(UUIDs.operatingMode);
+      console.log("Writing operatingMode:", operatingMode);
       await modeChar.writeValue(toByteArray(operatingMode));
       showMessage(`Operating Mode updated to ${operatingMode}`);
     } catch (err) {
@@ -307,25 +343,30 @@ function App() {
     try {
       // Stimulation Amplitude
       const ampChar = await hhiService.getCharacteristic(UUIDs.stimAmplitude);
+      console.log("Writing stimAmplitude:", stimAmplitude);
       await ampChar.writeValue(toByteArray(stimAmplitude));
 
       // Frequency
       const freqChar = await hhiService.getCharacteristic(UUIDs.stimFrequency);
+      console.log("Writing stimFrequency:", stimFrequency);
       await freqChar.writeValue(toByteArray(stimFrequency));
 
       // Pulse Width (16-bit LE)
       const pwChar = await hhiService.getCharacteristic(UUIDs.stimPulseWidth);
       const pwData = new Uint8Array(2);
       new DataView(pwData.buffer).setUint16(0, stimPulseWidth, true);
+      console.log("Writing stimPulseWidth:", stimPulseWidth);
       await pwChar.writeValue(pwData);
 
       // Number of pulses
       const numChar = await hhiService.getCharacteristic(UUIDs.stimNumPulses);
+      console.log("Writing stimNumPulses:", stimNumPulses);
       await numChar.writeValue(toByteArray(stimNumPulses));
 
       // EMG Threshold
       try {
         const emgChar = await hhiService.getCharacteristic(UUIDs.emgThreshold);
+        console.log("Writing emgThreshold:", emgThreshold);
         await emgChar.writeValue(toByteArray(emgThreshold));
       } catch (err) {
         console.warn("Unable to write EMG threshold:", err);
@@ -347,16 +388,21 @@ function App() {
       // Wi-Fi SSID
       try {
         const ssidChar = await hhiService.getCharacteristic(UUIDs.wifiSSID);
-        await writeString(ssidChar, wifiSSID);
+        console.log("Writing Wi-Fi SSID:", wifiSSID);
+        // If firmware uses Write With Response for SSID:
+        await writeString(ssidChar, wifiSSID, false);
       } catch (err) {
         console.warn("Failed to write Wi-Fi SSID:", err);
       }
 
       // Wi-Fi Password (write-only)
+      // If user typed something, let's send it. If your device always needs password, remove the 'if' check.
       if (wifiPassword.trim().length > 0) {
         try {
           const pwdChar = await hhiService.getCharacteristic(UUIDs.wifiPassword);
-          await writeString(pwdChar, wifiPassword);
+          console.log("Writing Wi-Fi Password (write-only): [REDACTED]");
+          // If firmware uses Write Without Response for password:
+          await writeString(pwdChar, wifiPassword, true);
         } catch (err) {
           console.warn("Failed to write Wi-Fi Password:", err);
         }
@@ -365,6 +411,7 @@ function App() {
       // MQTT server/port
       try {
         const mqttChar = await hhiService.getCharacteristic(UUIDs.mqttServerPort);
+        console.log("Writing MQTT server:", mqttServerPort);
         await writeString(mqttChar, mqttServerPort);
       } catch (err) {
         console.warn("Failed to write MQTT server/port:", err);
@@ -373,6 +420,7 @@ function App() {
       // Master name
       try {
         const masterChar = await hhiService.getCharacteristic(UUIDs.masterNameAddr);
+        console.log("Writing Master Name:", masterNameAddr);
         await writeString(masterChar, masterNameAddr);
       } catch (err) {
         console.warn("Failed to write Master name:", err);
@@ -381,6 +429,7 @@ function App() {
       // Minion name
       try {
         const minionChar = await hhiService.getCharacteristic(UUIDs.minionNameAddr);
+        console.log("Writing Minion Name:", minionNameAddr);
         await writeString(minionChar, minionNameAddr);
       } catch (err) {
         console.warn("Failed to write Minion name:", err);
@@ -402,6 +451,7 @@ function App() {
       const triggerChar = await hhiService.getCharacteristic(
         UUIDs.triggerStimulation
       );
+      console.log("Triggering Stimulation: 1");
       await triggerChar.writeValue(toByteArray(1));
       showMessage("Stimulation triggered!");
     } catch (err) {
@@ -412,7 +462,7 @@ function App() {
 
   /**
    * Stop stimulation manually (write 0 to 0xBB12).
-   * Useful when stimNumPulses=0 (infinite) or whenever user wants to abort.
+   * Useful when stimNumPulses=0 (infinite) or user wants to abort.
    */
   const onStopStimulation = async () => {
     if (!hhiService) return;
@@ -420,6 +470,7 @@ function App() {
       const triggerChar = await hhiService.getCharacteristic(
         UUIDs.triggerStimulation
       );
+      console.log("Stopping Stimulation: 0");
       await triggerChar.writeValue(toByteArray(0));
       showMessage("Stimulation stopped.");
     } catch (err) {
@@ -485,7 +536,7 @@ function App() {
                       fullWidth
                       margin="normal"
                       type="number"
-                      label="Stimulation Amplitude (0-50 mA, 255=pot?)"
+                      label="Stimulation Amplitude (0-50, 255=pot?)"
                       value={stimAmplitude}
                       onChange={(e) => setStimAmplitude(Number(e.target.value))}
                     />
