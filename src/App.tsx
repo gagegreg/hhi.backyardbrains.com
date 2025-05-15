@@ -167,35 +167,50 @@ function App() {
   };
 
   // --------------- Notifications ---------------
+  // ---------- Notifications ----------
   const startNotifications = async (svc: BluetoothRemoteGATTService) => {
-    // Wi-Fi status (bitmask)
-    try {
-      const wsChar = await svc.getCharacteristic(UUIDs.wifiStatus);
-      await wsChar.startNotifications();
-      wsChar.addEventListener("characteristicvaluechanged", e => {
-        const v = fromUint8((e.target as BluetoothRemoteGATTCharacteristic).value!);
-        setWifiConnected(!!(v & 0x01));
-        setMqttConnected(!!(v & 0x02));
-      });
-    } catch {}
+    // helper to keep code DRY
+    const subscribe = async (
+      uuid: number,
+      handler: (dv: DataView) => void,
+    ) => {
+      try {
+        const ch = await svc.getCharacteristic(uuid);
+        await ch.startNotifications();
+        ch.addEventListener(
+          "characteristicvaluechanged",
+          (e) => handler((e.target as BluetoothRemoteGATTCharacteristic).value!),
+        );
+      } catch {
+        // characteristic may be absent in older firmware – ignore
+      }
+    };
 
-    // IP address (string)
-    try {
-      const ipChar = await svc.getCharacteristic(UUIDs.wifiIP);
-      await ipChar.startNotifications();
-      ipChar.addEventListener("characteristicvaluechanged", e =>
-        setWifiIP(decodeStr((e.target as BluetoothRemoteGATTCharacteristic).value!))
-      );
-    } catch {}
+    // ----- 0xBB0E – Wi-Fi / MQTT status (bit-mask) -----
+    await subscribe(UUIDs.wifiStatus, (dv) => {
+      const v = fromUint8(dv);
+      setWifiConnected(!!(v & 0x01));
+      setMqttConnected(!!(v & 0x02));
+    });
 
-    // Current stimulation amplitude mirror (UInt16)
-    try {
-      const ampChar = await svc.getCharacteristic(UUIDs.currentStimAmplitude);
-      await ampChar.startNotifications();
-      ampChar.addEventListener("characteristicvaluechanged", e =>
-        setStimAmplitude(fromUint16LE((e.target as BluetoothRemoteGATTCharacteristic).value!))
-      );
-    } catch {}
+    // ----- 0xBB0F – IP address (string) -----
+    await subscribe(UUIDs.wifiIP, (dv) => setWifiIP(decodeStr(dv)));
+
+    // ----- 0xBB10 – current stimulation amplitude (UInt16 mirror) -----
+    await subscribe(UUIDs.currentStimAmplitude, (dv) =>
+      setStimAmplitude(fromUint16LE(dv)),
+    );
+
+    // ----- 0xBB07 – EMG threshold (UInt8) -----
+    await subscribe(UUIDs.emgThreshold, (dv) =>
+      setEmgThreshold(fromUint8(dv)),
+    );
+
+    // ----- 0xBB12 – stimulation trigger flag (UInt8 0|1) -----
+    await subscribe(UUIDs.triggerStimulation, (dv) => {
+      const on = !!fromUint8(dv);
+      log(on ? "Stim started (remote)" : "Stim stopped (remote)");
+    });
   };
 
   // --------------- Writers ---------------
