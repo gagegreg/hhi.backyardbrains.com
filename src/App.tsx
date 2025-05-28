@@ -137,33 +137,76 @@ function App() {
 
   // --------------- Initial read ---------------
   const readInitial = async (svc: BluetoothRemoteGATTService) => {
-    const r8  = async (u: number, s: (v: number) => void) =>
-      s(fromUint8(await (await svc.getCharacteristic(u)).readValue()));
-    const r16 = async (u: number, s: (v: number) => void) =>
-      s(fromUint16LE(await (await svc.getCharacteristic(u)).readValue()));
+    log("Starting initial parameter read...");
 
+    // Helper for reading an 8-bit unsigned integer
+    const readUint8 = async (uuid: number, setter: (value: number) => void, name: string) => {
+      try {
+        const char = await svc.getCharacteristic(uuid);
+        const value = fromUint8(await char.readValue());
+        setter(value);
+        log(`${name} read: ${value}`);
+      } catch (e) {
+        log(`Failed to read ${name} (0x${uuid.toString(16)}): ${e}`);
+      }
+    };
+
+    // Helper for reading a 16-bit unsigned little-endian integer
+    const readUint16LE = async (uuid: number, setter: (value: number) => void, name: string) => {
+      try {
+        const char = await svc.getCharacteristic(uuid);
+        const value = fromUint16LE(await char.readValue());
+        setter(value);
+        log(`${name} read: ${value}`);
+      } catch (e) {
+        log(`Failed to read ${name} (0x${uuid.toString(16)}): ${e}`);
+      }
+    };
+
+    // Helper for reading a string
+    const readString = async (uuid: number, setter: (value: string) => void, name: string) => {
+      try {
+        const char = await svc.getCharacteristic(uuid);
+        const value = decodeStr(await char.readValue());
+        setter(value);
+        log(`${name} read: '${value}'`);
+      } catch (e) {
+        log(`Failed to read ${name} (0x${uuid.toString(16)}): ${e}`);
+      }
+    };
+
+    // 1. Read Operating Mode first
+    await readUint8(UUIDs.operatingMode, setOperatingMode, "Operating Mode");
+
+    // 2. Read general stimulation parameters
+    await readUint16LE(UUIDs.stimAmplitude, setStimAmplitude, "Stim Amplitude"); // 16-bit
+    await readUint8(UUIDs.emgThreshold, setEmgThreshold, "EMG Threshold");
+
+    // 3. Read Network Parameters
     try {
-      await r8 (UUIDs.operatingMode,   setOperatingMode);
-      await r16(UUIDs.stimAmplitude,   setStimAmplitude);   // 16-bit now
-      await r8 (UUIDs.stimFrequency,   setStimFrequency);
-      await r16(UUIDs.stimPulseWidth,  setStimPulseWidth);
-      try { await r8 (UUIDs.stimDuration, setStimDuration); } catch {}
-      await r16(UUIDs.stimNumPulses,   setStimNumPulses);
-      await r8 (UUIDs.emgThreshold,    setEmgThreshold);
-      try { await r8 (UUIDs.triggerEnableMask, setTriggerMask); } catch {}
-
-      const ws = fromUint8(await (await svc.getCharacteristic(UUIDs.wifiStatus)).readValue());
+      const char = await svc.getCharacteristic(UUIDs.wifiStatus);
+      const ws = fromUint8(await char.readValue());
       setWifiConnected(!!(ws & 0x01));
       setMqttConnected(!!(ws & 0x02));
-
-      setWifiIP(decodeStr(await (await svc.getCharacteristic(UUIDs.wifiIP)).readValue()));
-      try { setWifiSSID       (decodeStr(await (await svc.getCharacteristic(UUIDs.wifiSSID)).readValue()));        } catch {}
-      try { setMqttServerPort (decodeStr(await (await svc.getCharacteristic(UUIDs.mqttServerPort)).readValue()));   } catch {}
-      try { setMasterNameAddr (decodeStr(await (await svc.getCharacteristic(UUIDs.masterNameAddr)).readValue()));   } catch {}
-      try { setMinionNameAddr (decodeStr(await (await svc.getCharacteristic(UUIDs.minionNameAddr)).readValue()));   } catch {}
+      log(`WiFi Status read: Connected=${!!(ws & 0x01)}, MQTT Connected=${!!(ws & 0x02)}`);
     } catch (e) {
-      log(`Init read err: ${e}`);
+      log(`Failed to read WiFi Status (0x${UUIDs.wifiStatus.toString(16)}): ${e}`);
     }
+    await readString(UUIDs.wifiIP, setWifiIP, "WiFi IP");
+    await readString(UUIDs.wifiSSID, setWifiSSID, "WiFi SSID");
+    await readString(UUIDs.mqttServerPort, setMqttServerPort, "MQTT Server/Port");
+    await readString(UUIDs.masterNameAddr, setMasterNameAddr, "Master Name/Addr");
+    await readString(UUIDs.minionNameAddr, setMinionNameAddr, "Minion Name/Addr");
+
+    // 4. Read other stimulation parameters (potentially Mode 3 specific) at the end
+    log("Attempting to read Mode 3-centric stimulation parameters (these may fail in other modes)...");
+    await readUint8(UUIDs.stimFrequency, setStimFrequency, "Stim Frequency");
+    await readUint16LE(UUIDs.stimPulseWidth, setStimPulseWidth, "Stim Pulse Width");
+    await readUint8(UUIDs.stimDuration, setStimDuration, "Stim Duration");
+    await readUint16LE(UUIDs.stimNumPulses, setStimNumPulses, "Stim Num Pulses");
+    await readUint8(UUIDs.triggerEnableMask, setTriggerMask, "Trigger Enable Mask");
+
+    log("Initial read sequence finished.");
   };
 
   // --------------- Notifications ---------------
