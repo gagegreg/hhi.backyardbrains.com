@@ -97,6 +97,20 @@ function App() {
     setTimeout(() => setSnackbar({ open: false, msg: "" }), 1500);
   };
 
+  // --------------- Handle Disconnect -----------------
+  const onDisconnected = () => {
+    log("Device disconnected.");
+    toast("Device disconnected 🔌");
+    setDevice(null);
+    setHhiSvc(null);
+    // Reset connection-related status states
+    setBattery(0); // Assuming battery info is unavailable when disconnected
+    setWifiConnected(false);
+    setMqttConnected(false);
+    setWifiIP("");
+    // Consider if other config states should be reset or preserved
+  };
+
   // --------------- Connect ---------------
   const onConnect = async () => {
     try {
@@ -106,6 +120,9 @@ function App() {
         optionalServices: [BATTERY_SERVICE_UUID, HHI_SERVICE_UUID],
       });
       setDevice(dev);
+
+      // Add disconnect listener
+      dev.addEventListener('gattserverdisconnected', onDisconnected);
 
       log("Connecting GATT…");
       const gatt = await dev.gatt!.connect();
@@ -281,15 +298,20 @@ function App() {
 
   const saveNetworkSettings = async () => {
     if (!hhiSvc) return;
+    // Log the values being prepared to write
+    log(`Saving network settings. SSID: '${wifiSSID}', Pass_Provided: ${!!wifiPassword}, MQTT: '${mqttServerPort}', Master: '${masterNameAddr}', Minion: '${minionNameAddr}'`);
     try {
       await writeStr(await hhiSvc.getCharacteristic(UUIDs.wifiSSID), wifiSSID);
-      if (wifiPassword)
+      if (wifiPassword) { // Only write password if a new one is provided
+        log(`Writing WiFi Password (as it's not blank).`);
         await writeStr(await hhiSvc.getCharacteristic(UUIDs.wifiPassword), wifiPassword);
+      }
       await writeStr(await hhiSvc.getCharacteristic(UUIDs.mqttServerPort), mqttServerPort);
       await writeStr(await hhiSvc.getCharacteristic(UUIDs.masterNameAddr), masterNameAddr);
       await writeStr(await hhiSvc.getCharacteristic(UUIDs.minionNameAddr), minionNameAddr);
       toast("Network settings saved");
-    } catch {
+    } catch (e) {
+      log(`Error saving network settings: ${e}`);
       toast("Save failed");
     }
   };
