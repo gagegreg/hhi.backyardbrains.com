@@ -1,5 +1,5 @@
 // src/App.tsx
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   AppBar,
   Toolbar,
@@ -272,6 +272,34 @@ function App() {
       log(on ? "Stim started (remote)" : "Stim stopped (remote)");
     });
   };
+
+  // Helper to refresh network-related fields when entering network modes
+  const readNetworkSettings = async () => {
+    if (!hhiSvc) return;
+
+    const readString = async (uuid: number, setter: (value: string) => void, name: string) => {
+      try {
+        const c = await hhiSvc.getCharacteristic(uuid);
+        const v = decodeStr(await c.readValue());
+        setter(v);
+        log(`${name} read: '${v}'`);
+      } catch (e) {
+        log(`Failed to read ${name} (0x${uuid.toString(16)}): ${e}`);
+      }
+    };
+
+    await readString(UUIDs.wifiSSID, setWifiSSID, "WiFi SSID");
+    await readString(UUIDs.mqttServerPort, setMqttServerPort, "MQTT Server/Port");
+    await readString(UUIDs.masterNameAddr, setMasterNameAddr, "Master Name/Addr");
+    await readString(UUIDs.minionNameAddr, setMinionNameAddr, "Minion Name/Addr");
+  };
+
+  useEffect(() => {
+    if (operatingMode === 1 || operatingMode === 2) {
+      void readNetworkSettings();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [operatingMode, hhiSvc]);
 
   // --------------- Writers ---------------
   const saveOperatingMode = async () => {
