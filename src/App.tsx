@@ -58,6 +58,7 @@ const fromUint16LE   = (dv: DataView) => dv.getUint16(0, true);
 const decodeStr      = (dv: DataView) => new TextDecoder().decode(dv.buffer);
 const encodeStr      = (s: string) => new TextEncoder().encode(s);
 const writeStr       = (c: BluetoothRemoteGATTCharacteristic, s: string) => c.writeValue(encodeStr(s));
+const readString     = async (c: BluetoothRemoteGATTCharacteristic) => decodeStr(await c.readValue());
 
 // ====================================================
 function App() {
@@ -180,17 +181,6 @@ function App() {
       }
     };
 
-    // Helper for reading a string
-    const readString = async (uuid: number, setter: (value: string) => void, name: string) => {
-      try {
-        const char = await svc.getCharacteristic(uuid);
-        const value = decodeStr(await char.readValue());
-        setter(value);
-        log(`${name} read: '${value}'`);
-      } catch (e) {
-        log(`Failed to read ${name} (0x${uuid.toString(16)}): ${e}`);
-      }
-    };
 
     // 1. Read Operating Mode first
     await readUint8(UUIDs.operatingMode, setOperatingMode, "Operating Mode");
@@ -209,11 +199,41 @@ function App() {
     } catch (e) {
       log(`Failed to read WiFi Status (0x${UUIDs.wifiStatus.toString(16)}): ${e}`);
     }
-    await readString(UUIDs.wifiIP, setWifiIP, "WiFi IP");
-    await readString(UUIDs.wifiSSID, setWifiSSID, "WiFi SSID");
-    await readString(UUIDs.mqttServerPort, setMqttServerPort, "MQTT Server/Port");
-    await readString(UUIDs.masterNameAddr, setMasterNameAddr, "Master Name/Addr");
-    await readString(UUIDs.minionNameAddr, setMinionNameAddr, "Minion Name/Addr");
+    try {
+      const v = await readString(await svc.getCharacteristic(UUIDs.wifiIP));
+      setWifiIP(v);
+      log(`WiFi IP read: '${v}'`);
+    } catch (e) {
+      log(`Failed to read WiFi IP (0x${UUIDs.wifiIP.toString(16)}): ${e}`);
+    }
+    try {
+      const v = await readString(await svc.getCharacteristic(UUIDs.wifiSSID));
+      setWifiSSID(v);
+      log(`WiFi SSID read: '${v}'`);
+    } catch (e) {
+      log(`Failed to read WiFi SSID (0x${UUIDs.wifiSSID.toString(16)}): ${e}`);
+    }
+    try {
+      const v = await readString(await svc.getCharacteristic(UUIDs.mqttServerPort));
+      setMqttServerPort(v);
+      log(`MQTT Server/Port read: '${v}'`);
+    } catch (e) {
+      log(`Failed to read MQTT Server/Port (0x${UUIDs.mqttServerPort.toString(16)}): ${e}`);
+    }
+    try {
+      const v = await readString(await svc.getCharacteristic(UUIDs.masterNameAddr));
+      setMasterNameAddr(v);
+      log(`Master Name/Addr read: '${v}'`);
+    } catch (e) {
+      log(`Failed to read Master Name/Addr (0x${UUIDs.masterNameAddr.toString(16)}): ${e}`);
+    }
+    try {
+      const v = await readString(await svc.getCharacteristic(UUIDs.minionNameAddr));
+      setMinionNameAddr(v);
+      log(`Minion Name/Addr read: '${v}'`);
+    } catch (e) {
+      log(`Failed to read Minion Name/Addr (0x${UUIDs.minionNameAddr.toString(16)}): ${e}`);
+    }
 
     // 4. Read other stimulation parameters (potentially Mode 3 specific) at the end
     log("Attempting to read Mode 3-centric stimulation parameters (these may fail in other modes)...");
